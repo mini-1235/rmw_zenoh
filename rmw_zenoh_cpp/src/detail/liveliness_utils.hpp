@@ -168,8 +168,8 @@ public:
   /// Get the NodeInfo.
   NodeInfo node_info() const;
 
-  /// Get the immutable TopicInfo owned by this Entity, if present.
-  const std::optional<TopicInfo> & topic_info() const;
+  /// Get the TopicInfo of this Entity, or nullptr if it has none.
+  std::shared_ptr<const TopicInfo> topic_info() const;
 
   /// Get the liveliness keyexpr for this entity.
   std::string liveliness_keyexpr() const;
@@ -194,7 +194,7 @@ private:
   std::size_t gid_hash_;
   EntityType type_;
   NodeInfo node_info_;
-  std::optional<TopicInfo> topic_info_;
+  std::shared_ptr<const TopicInfo> topic_info_;
   std::string liveliness_keyexpr_;
   std::array<uint8_t, RMW_GID_STORAGE_SIZE> gid_{};
 };

@@ -185,7 +185,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
 
   // Create the base publisher through the same path as every endpoint,
   // stored in endpoints_ under the topic key expression.
-  const std::string base_key = pub_data->entity_->topic_info()->topic_keyexpr_;
+  const std::string base_key = pub_data->topic_info_->topic_keyexpr_;
   auto base_endpoint = pub_data->create_publisher_endpoint(base_key, /*buffer_aware=*/false);
   if (!base_endpoint) {
     RMW_SET_ERROR_MSG("Unable to create Zenoh publisher.");
@@ -209,7 +209,7 @@ std::shared_ptr<PublisherData> PublisherData::make(
     // peer-to-peer endpoints -- mirrors rmw_fastrtps_cpp's eager CPU
     // DataWriter creation.
     const std::string cpu_group_key = make_cpu_group_key(
-      pub_data->entity_->topic_info()->topic_keyexpr_);
+      pub_data->topic_info_->topic_keyexpr_);
     auto cpu_endpoint = pub_data->create_publisher_endpoint(cpu_group_key);
     if (!cpu_endpoint) {
       RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
@@ -258,6 +258,7 @@ PublisherData::PublisherData(
 : rmw_publisher_(rmw_publisher),
   rmw_node_(rmw_node),
   entity_(std::move(entity)),
+  topic_info_(entity_->topic_info()),
   sess_(std::move(sess)),
   token_(std::move(token)),
   type_support_impl_(type_support_impl),
@@ -288,7 +289,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
   RMW_ZENOH_ROSIDL_BUFFER_LOG_DEBUG_NAMED(
     "rmw_zenoh_cpp",
     "[Publisher] Publishing buffer-aware message for topic '%s' (message type: %s)",
-    entity_->topic_info()->name_.c_str(), entity_->topic_info()->type_.c_str());
+    topic_info_->name_.c_str(), topic_info_->type_.c_str());
 
   // For buffer-aware publishers, route to different endpoints based on discovered subscribers
   if (discovered_subscribers_.empty()) {
@@ -302,7 +303,7 @@ rmw_ret_t PublisherData::publish_buffer_aware(
   }
 
   const std::string cpu_group_key =
-    make_cpu_group_key(entity_->topic_info()->topic_keyexpr_);
+    make_cpu_group_key(topic_info_->topic_keyexpr_);
 
   // Serialize and publish to each endpoint
   rmw_ret_t ret = RMW_RET_OK;
@@ -500,7 +501,7 @@ rmw_ret_t PublisherData::publish(
     size_t total_matched = 0;
     if (graph_cache_) {
       graph_cache_->publisher_count_matched_subscriptions(
-        entity_->topic_info().value(), &total_matched);
+        *topic_info_, &total_matched);
     }
     if (total_matched <= discovered_subscribers_.size()) {
       return publish_buffer_aware(ros_message, shm);
@@ -731,9 +732,9 @@ std::size_t PublisherData::gid_hash() const
 }
 
 ///=============================================================================
-const liveliness::TopicInfo & PublisherData::topic_info() const
+std::shared_ptr<const liveliness::TopicInfo> PublisherData::topic_info() const
 {
-  return entity_->topic_info().value();
+  return topic_info_;
 }
 
 std::array<uint8_t, RMW_GID_STORAGE_SIZE> PublisherData::copy_gid() const
@@ -770,8 +771,8 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     return;
   }
 
-  const auto & topic_info_opt = entity.topic_info();
-  if (!topic_info_opt.has_value()) {
+  const auto topic_info = entity.topic_info();
+  if (topic_info == nullptr) {
     RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Discovered subscriber without topic info on Buffer topic");
@@ -779,8 +780,8 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
   }
 
   std::unordered_map<std::string, std::string> sub_backend_metadata;
-  if (topic_info_opt->backend_metadata_.has_value()) {
-    sub_backend_metadata = topic_info_opt->backend_metadata_.value();
+  if (topic_info->backend_metadata_.has_value()) {
+    sub_backend_metadata = topic_info->backend_metadata_.value();
   }
   const bool use_cpu_group = is_cpu_only_backend_metadata(sub_backend_metadata);
 
@@ -792,7 +793,7 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     "topic='%s', entity.type='%s', node='%s', ns='%s', "
     "zid='%s', gid='%s', entity_gid='%s'",
     entity.liveliness_keyexpr().c_str(),
-    topic_info_opt->name_.c_str(),
+    topic_info->name_.c_str(),
     entity_type_to_string(entity.type()),
     entity.node_name().c_str(),
     entity.node_namespace().c_str(),
@@ -831,8 +832,8 @@ void PublisherData::on_subscriber_discovered(const liveliness::Entity & entity)
     }
 
     full_key = use_cpu_group ?
-      make_cpu_group_key(entity_->topic_info()->topic_keyexpr_) :
-      make_accelerated_key(entity_->topic_info()->topic_keyexpr_, gid);
+      make_cpu_group_key(topic_info_->topic_keyexpr_) :
+      make_accelerated_key(topic_info_->topic_keyexpr_, gid);
 
     need_create_endpoint = (endpoints_.find(full_key) == endpoints_.end());
     if (need_create_endpoint) {
@@ -915,7 +916,7 @@ std::shared_ptr<PublisherData::PublisherEndpoint> PublisherData::create_publishe
 
   zenoh::KeyExpr pub_ke(full_key);
 
-  auto qos_profile = entity_->topic_info()->qos_;
+  auto qos_profile = topic_info_->qos_;
 
   using AdvancedPublisherOptions = zenoh::ext::SessionExt::AdvancedPublisherOptions;
   using SampleMissDetectionOptions = AdvancedPublisherOptions::SampleMissDetectionOptions;
@@ -974,7 +975,7 @@ PublisherData::~PublisherData()
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Error destructing publisher /%s.",
-      entity_->topic_info().value().name_.c_str()
+      topic_info_->name_.c_str()
     );
   }
 }
@@ -1013,7 +1014,7 @@ rmw_ret_t PublisherData::shutdown()
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Unable to undeclare the liveliness token for topic '%s'",
-      entity_->topic_info().value().name_.c_str());
+      topic_info_->name_.c_str());
     return RMW_RET_ERROR;
   }
 

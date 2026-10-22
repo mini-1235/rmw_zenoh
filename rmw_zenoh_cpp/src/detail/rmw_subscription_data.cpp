@@ -330,6 +330,7 @@ SubscriptionData::SubscriptionData(
 : rmw_node_(rmw_node),
   graph_cache_(std::move(graph_cache)),
   entity_(std::move(entity)),
+  topic_info_(entity_->topic_info()),
   sess_(std::move(session)),
   type_support_impl_(type_support_impl),
   type_support_(std::move(type_support)),
@@ -351,7 +352,7 @@ SubscriptionData::SubscriptionData(
 bool SubscriptionData::init()
 {
   zenoh::ZResult result;
-  zenoh::KeyExpr sub_ke(entity_->topic_info()->topic_keyexpr_, true, &result);
+  zenoh::KeyExpr sub_ke(topic_info_->topic_keyexpr_, true, &result);
   if (result != Z_OK) {
     RMW_SET_ERROR_MSG("unable to create zenoh keyexpr.");
     return false;
@@ -375,7 +376,7 @@ bool SubscriptionData::init()
 
   // Instantiate the subscription with suitable options depending on the
   // adapted_qos_profile.
-  if (entity_->topic_info()->qos_.durability == RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL) {
+  if (topic_info_->qos_.durability == RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL) {
     // Allow this subscriber to be detected through liveliness.
     adv_sub_opts.subscriber_detection = true;
     adv_sub_opts.query_timeout_ms = std::numeric_limits<uint64_t>::max();
@@ -383,8 +384,8 @@ bool SubscriptionData::init()
     adv_sub_opts.history = AdvancedSubscriberOptions::HistoryOptions::create_default();
     // Enable detection of late joiner publishers and query for their historical data.
     adv_sub_opts.history->detect_late_publishers = true;
-    adv_sub_opts.history->max_samples = entity_->topic_info()->qos_.depth;
-    if (entity_->topic_info()->qos_.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE) {
+    adv_sub_opts.history->max_samples = topic_info_->qos_.depth;
+    if (topic_info_->qos_.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE) {
       // Activate recovery of lost samples.
       // This requires the Publisher to have sample_miss_detection configured,
       // which is the case for a RELIABLE + TRANSIENT_LOCAL Publisher.
@@ -446,7 +447,7 @@ bool SubscriptionData::init()
   if (is_buffer_aware_) {
     if (is_cpu_only_backend_types(my_backend_types_)) {
       auto cpu_endpoint = create_subscription_endpoint(
-        make_cpu_group_key(entity_->topic_info()->topic_keyexpr_),
+        make_cpu_group_key(topic_info_->topic_keyexpr_),
         std::nullopt,
         false);
       if (!cpu_endpoint) {
@@ -463,7 +464,7 @@ bool SubscriptionData::init()
       rmw_gid_t local_gid = rmw_zenoh_cpp::entity_gid_to_rmw_gid(
         *entity_, rmw_zenoh_cpp::rmw_zenoh_identifier);
       const std::string accel_key = make_accelerated_key(
-        entity_->topic_info()->topic_keyexpr_, gid_to_hex(local_gid));
+        topic_info_->topic_keyexpr_, gid_to_hex(local_gid));
       auto accel_endpoint = create_subscription_endpoint(
         accel_key, std::nullopt, true);
       if (!accel_endpoint) {
@@ -494,12 +495,12 @@ bool SubscriptionData::init()
       "rmw_zenoh_cpp",
       "[Subscription] Initialized buffer-aware subscription, "
       "base key: '%s'",
-      entity_->topic_info()->topic_keyexpr_.c_str());
+      topic_info_->topic_keyexpr_.c_str());
   } else {
     RMW_ZENOH_ROSIDL_BUFFER_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp",
       "[Subscription] Initialized simple subscription on key: '%s'",
-      entity_->topic_info()->topic_keyexpr_.c_str());
+      topic_info_->topic_keyexpr_.c_str());
   }
 
   return true;
@@ -512,9 +513,9 @@ std::size_t SubscriptionData::gid_hash() const
 }
 
 ///=============================================================================
-const liveliness::TopicInfo & SubscriptionData::topic_info() const
+std::shared_ptr<const liveliness::TopicInfo> SubscriptionData::topic_info() const
 {
-  return entity_->topic_info().value();
+  return topic_info_;
 }
 
 ///=============================================================================
@@ -541,7 +542,7 @@ SubscriptionData::~SubscriptionData()
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Error destructing publisher /%s.",
-      entity_->topic_info().value().name_.c_str()
+      topic_info_->name_.c_str()
     );
   }
 }
@@ -563,8 +564,8 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     return;
   }
 
-  const auto & topic_info = entity.topic_info();
-  if (!topic_info.has_value()) {
+  const auto topic_info = entity.topic_info();
+  if (topic_info == nullptr) {
     RMW_ZENOH_ROSIDL_BUFFER_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Discovered publisher without topic info on Buffer topic");
@@ -637,7 +638,7 @@ void SubscriptionData::on_publisher_discovered(const liveliness::Entity & entity
     "topic='%s', entity.type='%s', node='%s', ns='%s', "
     "zid='%s', gid='%s', entity_gid='%s'",
     entity.liveliness_keyexpr().c_str(),
-    entity.topic_info().has_value() ? entity.topic_info()->name_.c_str() : "",
+    entity.topic_info() != nullptr ? entity.topic_info()->name_.c_str() : "",
     entity_type_to_string(entity.type()),
     entity.node_name().c_str(),
     entity.node_namespace().c_str(),
@@ -724,13 +725,13 @@ SubscriptionData::create_subscription_endpoint(
     adv_sub_opts.subscriber_options.allowed_origin = ZC_LOCALITY_REMOTE;
   }
 
-  if (entity_->topic_info()->qos_.durability == RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL) {
+  if (topic_info_->qos_.durability == RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL) {
     adv_sub_opts.subscriber_detection = true;
     adv_sub_opts.query_timeout_ms = std::numeric_limits<uint64_t>::max();
     adv_sub_opts.history = AdvancedSubscriberOptions::HistoryOptions::create_default();
     adv_sub_opts.history->detect_late_publishers = true;
-    adv_sub_opts.history->max_samples = entity_->topic_info()->qos_.depth;
-    if (entity_->topic_info()->qos_.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE) {
+    adv_sub_opts.history->max_samples = topic_info_->qos_.depth;
+    if (topic_info_->qos_.reliability == RMW_QOS_POLICY_RELIABILITY_RELIABLE) {
       adv_sub_opts.recovery = AdvancedSubscriberOptions::RecoveryOptions{};
       adv_sub_opts.recovery->last_sample_miss_detection = RecoveryOptions::Heartbeat{};
     }
@@ -874,7 +875,7 @@ rmw_ret_t SubscriptionData::shutdown()
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Unable to undeclare the liveliness token for topic '%s'",
-      entity_->topic_info().value().name_.c_str());
+      topic_info_->name_.c_str());
     ret = RMW_RET_ERROR;
   }
 
@@ -897,7 +898,7 @@ rmw_ret_t SubscriptionData::shutdown()
       RMW_ZENOH_LOG_ERROR_NAMED(
         "rmw_zenoh_cpp",
         "Unable to undeclare the subscriber for topic '%s'",
-        entity_->topic_info().value().name_.c_str());
+        topic_info_->name_.c_str());
       ret = RMW_RET_ERROR;
     }
   }
@@ -945,11 +946,11 @@ rmw_ret_t SubscriptionData::take_one_message(
   *taken = false;
 
   std::lock_guard<std::mutex> lock(mutex_);
-  if (entity_ && entity_->topic_info().has_value()) {
+  if (topic_info_ != nullptr) {
     RMW_ZENOH_ROSIDL_BUFFER_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp",
       "[Subscription] take_one_message topic='%s' is_buffer_aware=%d queue_size=%zu",
-      entity_->topic_info().value().name_.c_str(),
+      topic_info_->name_.c_str(),
       is_buffer_aware_,
       message_queue_.size());
   }
@@ -1125,7 +1126,7 @@ void SubscriptionData::add_new_message(
     topic_name.c_str(),
     is_buffer_aware_,
     msg->payload.size());
-  const rmw_qos_profile_t adapted_qos_profile = entity_->topic_info().value().qos_;
+  const rmw_qos_profile_t adapted_qos_profile = topic_info_->qos_;
   if (adapted_qos_profile.history != RMW_QOS_POLICY_HISTORY_KEEP_ALL &&
     message_queue_.size() >= adapted_qos_profile.depth)
   {

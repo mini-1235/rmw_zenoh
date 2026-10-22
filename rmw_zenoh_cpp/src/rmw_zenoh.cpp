@@ -665,7 +665,7 @@ rmw_publisher_count_matched_subscriptions(
   RMW_CHECK_ARGUMENT_FOR_NULL(pub_data, RMW_RET_INVALID_ARGUMENT);
 
   return context_impl->graph_cache()->publisher_count_matched_subscriptions(
-    pub_data->topic_info(), subscription_count);
+    *pub_data->topic_info(), subscription_count);
 }
 
 //==============================================================================
@@ -693,7 +693,7 @@ rmw_publisher_get_actual_qos(
   auto pub_data = node_data->get_pub_data(publisher);
   RMW_CHECK_ARGUMENT_FOR_NULL(pub_data, RMW_RET_INVALID_ARGUMENT);
 
-  *qos = pub_data->topic_info().qos_;
+  *qos = pub_data->topic_info()->qos_;
   return RMW_RET_OK;
 }
 
@@ -1086,7 +1086,7 @@ rmw_subscription_count_matched_publishers(
   RMW_CHECK_ARGUMENT_FOR_NULL(sub_data, RMW_RET_INVALID_ARGUMENT);
 
   return sub_data->graph_cache()->subscription_count_matched_publishers(
-    sub_data->topic_info(), publisher_count);
+    *sub_data->topic_info(), publisher_count);
 }
 
 //==============================================================================
@@ -1107,7 +1107,7 @@ rmw_subscription_get_actual_qos(
     static_cast<rmw_zenoh_cpp::SubscriptionData *>(subscription->data);
   RMW_CHECK_ARGUMENT_FOR_NULL(sub_data, RMW_RET_INVALID_ARGUMENT);
 
-  *qos = sub_data->topic_info().qos_;
+  *qos = sub_data->topic_info()->qos_;
   return RMW_RET_OK;
 }
 
@@ -1656,7 +1656,7 @@ rmw_client_request_publisher_get_actual_qos(
     static_cast<rmw_zenoh_cpp::ClientData *>(client->data);
   RMW_CHECK_ARGUMENT_FOR_NULL(client_data, RMW_RET_INVALID_ARGUMENT);
 
-  *qos = client_data->topic_info().qos_;
+  *qos = client_data->topic_info()->qos_;
   return RMW_RET_OK;
 }
 
@@ -1918,7 +1918,7 @@ rmw_service_request_subscription_get_actual_qos(
     static_cast<rmw_zenoh_cpp::ServiceData *>(service->data);
   RMW_CHECK_ARGUMENT_FOR_NULL(service_data, RMW_RET_INVALID_ARGUMENT);
 
-  *qos = service_data->topic_info().qos_;
+  *qos = service_data->topic_info()->qos_;
   return RMW_RET_OK;
 }
 
@@ -2648,7 +2648,7 @@ rmw_service_server_is_available(
   }
 
   return node->context->impl->graph_cache()->service_server_is_available(
-    client_data->topic_info(), is_available);
+    *client_data->topic_info(), is_available);
 }
 
 //==============================================================================

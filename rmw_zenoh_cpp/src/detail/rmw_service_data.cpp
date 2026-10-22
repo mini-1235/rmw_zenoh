@@ -208,6 +208,7 @@ ServiceData::ServiceData(
 : rmw_node_(rmw_node),
   rmw_service_(rmw_service),
   entity_(std::move(entity)),
+  topic_info_(entity_->topic_info()),
   sess_(std::move(session)),
   keyexpr_(std::move(keyexpr)),
   request_type_support_impl_(request_type_support_impl),
@@ -221,9 +222,9 @@ ServiceData::ServiceData(
 }
 
 ///=============================================================================
-const liveliness::TopicInfo & ServiceData::topic_info() const
+std::shared_ptr<const liveliness::TopicInfo> ServiceData::topic_info() const
 {
-  return entity_->topic_info().value();
+  return topic_info_;
 }
 
 ///=============================================================================
@@ -247,7 +248,7 @@ void ServiceData::add_new_query(std::unique_ptr<ZenohQuery> query)
     return;
   }
   const rmw_qos_profile_t adapted_qos_profile =
-    entity_->topic_info().value().qos_;
+    topic_info_->qos_;
   if (adapted_qos_profile.history != RMW_QOS_POLICY_HISTORY_KEEP_ALL &&
     query_queue_.size() >= adapted_qos_profile.depth)
   {
@@ -257,7 +258,7 @@ void ServiceData::add_new_query(std::unique_ptr<ZenohQuery> query)
       "Query queue depth of %ld reached, discarding oldest Query "
       "for service '%s'",
       adapted_qos_profile.depth,
-      entity_->topic_info().value().name_.c_str());
+      topic_info_->name_.c_str());
     query_queue_.pop_front();
   }
   query_queue_.emplace_back(std::move(query));
@@ -478,7 +479,7 @@ ServiceData::~ServiceData()
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Error destructing service /%s.",
-      entity_->topic_info().value().name_.c_str()
+      topic_info_->name_.c_str()
     );
   }
 }

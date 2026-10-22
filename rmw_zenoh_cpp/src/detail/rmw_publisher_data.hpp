@@ -73,8 +73,8 @@ public:
   // Get a copy of the gid_hash of this PublisherData's liveliness::Entity.
   std::size_t gid_hash() const;
 
-  // Borrow the immutable TopicInfo owned by this PublisherData's Entity.
-  const liveliness::TopicInfo & topic_info() const;
+  // Get the immutable TopicInfo of this PublisherData's Entity.
+  std::shared_ptr<const liveliness::TopicInfo> topic_info() const;
 
   // Return a copy of the GID of this publisher.
   std::array<uint8_t, RMW_GID_STORAGE_SIZE> copy_gid() const;
@@ -152,6 +152,8 @@ private:
   const rmw_node_t * rmw_node_;
   // The Entity generated for the publisher.
   std::shared_ptr<liveliness::Entity> entity_;
+  // The TopicInfo of entity_.
+  std::shared_ptr<const liveliness::TopicInfo> topic_info_;
   // A shared session.
   std::shared_ptr<zenoh::Session> sess_;
   // Non-owning cache of the base publisher, which is stored in endpoints_

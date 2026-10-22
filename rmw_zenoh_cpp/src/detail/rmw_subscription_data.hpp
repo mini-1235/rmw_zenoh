@@ -79,8 +79,8 @@ public:
   // Get a copy of the gid_hash of this SubscriptionData's liveliness::Entity.
   std::size_t gid_hash() const;
 
-  // Borrow the immutable TopicInfo owned by this SubscriptionData's Entity.
-  const liveliness::TopicInfo & topic_info() const;
+  // Get the immutable TopicInfo of this SubscriptionData's Entity.
+  std::shared_ptr<const liveliness::TopicInfo> topic_info() const;
 
   // Returns true if liveliness token is still valid.
   bool liveliness_is_valid() const;
@@ -191,6 +191,8 @@ private:
   std::shared_ptr<GraphCache> graph_cache_;
   // The Entity generated for the subscription.
   std::shared_ptr<liveliness::Entity> entity_;
+  // The TopicInfo of entity_.
+  std::shared_ptr<const liveliness::TopicInfo> topic_info_;
   // A shared session.
   std::shared_ptr<zenoh::Session> sess_;
   // An owned AdvancedSubscriber for non-Buffer-aware subscriptions.

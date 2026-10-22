@@ -181,6 +181,7 @@ ClientData::ClientData(
 : rmw_node_(rmw_node),
   rmw_client_(rmw_client),
   entity_(std::move(entity)),
+  topic_info_(entity_->topic_info()),
   sess_(std::move(sess)),
   querier_(std::move(querier)),
   request_type_support_impl_(request_type_support_impl),
@@ -209,9 +210,9 @@ ClientData::ClientData(
 }
 
 ///=============================================================================
-const liveliness::TopicInfo & ClientData::topic_info() const
+std::shared_ptr<const liveliness::TopicInfo> ClientData::topic_info() const
 {
-  return entity_->topic_info().value();
+  return topic_info_;
 }
 
 ///=============================================================================
@@ -234,7 +235,7 @@ void ClientData::add_new_reply(std::unique_ptr<ZenohReply> reply)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   const rmw_qos_profile_t adapted_qos_profile =
-    entity_->topic_info().value().qos_;
+    topic_info_->qos_;
   if (adapted_qos_profile.history != RMW_QOS_POLICY_HISTORY_KEEP_ALL &&
     reply_queue_.size() >= adapted_qos_profile.depth)
   {
@@ -244,7 +245,7 @@ void ClientData::add_new_reply(std::unique_ptr<ZenohReply> reply)
       "Query queue depth of %ld reached, discarding oldest Query "
       "for client for %s",
       adapted_qos_profile.depth,
-      this->entity_->topic_info().value().topic_keyexpr_.c_str());
+      this->topic_info_->topic_keyexpr_.c_str());
     reply_queue_.pop_front();
   }
   reply_queue_.emplace_back(std::move(reply));
@@ -413,8 +414,8 @@ rmw_ret_t ClientData::send_request(
         auto reply_err_str = reply.get_err().get_payload().as_string();
         auto locked_client_data = client_data.lock();
         if (locked_client_data != nullptr && locked_client_data->entity_ != nullptr) {
-          const auto & topic_info = locked_client_data->entity_->topic_info();
-          if (topic_info.has_value()) {
+          const auto topic_info = locked_client_data->topic_info_;
+          if (topic_info != nullptr) {
             RMW_ZENOH_LOG_ERROR_NAMED(
               "rmw_zenoh_cpp",
               "z_reply_is_ok returned False Reason: %s for service '%s'",
@@ -471,7 +472,7 @@ ClientData::~ClientData()
     RMW_ZENOH_LOG_ERROR_NAMED(
       "rmw_zenoh_cpp",
       "Error destructing client /%s.",
-      entity_->topic_info().value().name_.c_str()
+      topic_info_->name_.c_str()
     );
   }
 }

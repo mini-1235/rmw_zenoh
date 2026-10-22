@@ -56,8 +56,8 @@ public:
     const rosidl_service_type_support_t * type_support,
     const rmw_qos_profile_t * qos_profile);
 
-  // Borrow the immutable TopicInfo owned by this ClientData's Entity.
-  const liveliness::TopicInfo & topic_info() const;
+  // Get the immutable TopicInfo of this ClientData's Entity.
+  std::shared_ptr<const liveliness::TopicInfo> topic_info() const;
 
   // Returns true if liveliness token is still valid.
   bool liveliness_is_valid() const;
@@ -121,6 +121,8 @@ private:
   const rmw_client_t * rmw_client_;
   // The Entity generated for the service.
   std::shared_ptr<liveliness::Entity> entity_;
+  // The TopicInfo of entity_.
+  std::shared_ptr<const liveliness::TopicInfo> topic_info_;
   // A shared session.
   std::shared_ptr<zenoh::Session> sess_;
   // Zenoh querier

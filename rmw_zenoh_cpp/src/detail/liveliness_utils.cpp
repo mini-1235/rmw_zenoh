@@ -517,7 +517,8 @@ Entity::Entity(
   id_(std::move(id)),
   type_(std::move(type)),
   node_info_(std::move(node_info)),
-  topic_info_(std::move(topic_info))
+  topic_info_(topic_info.has_value() ?
+    std::make_shared<const TopicInfo>(std::move(topic_info.value())) : nullptr)
 {
   std::string keyexpr_parts[KEYEXPR_INDEX_MAX + 1] {};
   keyexpr_parts[KeyexprIndex::AdminSpace] = ADMIN_SPACE;
@@ -533,8 +534,8 @@ Entity::Entity(
   keyexpr_parts[KeyexprIndex::Namespace] = mangle_name(node_info_.ns_);
   keyexpr_parts[KeyexprIndex::NodeName] = mangle_name(node_info_.name_);
   // If this entity has a topic info, append it to the token.
-  if (topic_info_.has_value()) {
-    const auto & topic_info = this->topic_info_.value();
+  if (topic_info_ != nullptr) {
+    const auto & topic_info = *this->topic_info_;
     keyexpr_parts[KeyexprIndex::TopicName] = mangle_name(topic_info.name_);
     keyexpr_parts[KeyexprIndex::TopicType] = mangle_name(topic_info.type_);
     keyexpr_parts[KeyexprIndex::TopicTypeHash] = mangle_name(topic_info.type_hash_);
@@ -810,7 +811,7 @@ NodeInfo Entity::node_info() const
 }
 
 ///=============================================================================
-const std::optional<TopicInfo> & Entity::topic_info() const
+std::shared_ptr<const TopicInfo> Entity::topic_info() const
 {
   return this->topic_info_;
 }

@@ -47,7 +47,7 @@ using EntityType = liveliness::EntityType;
 ///=============================================================================
 TopicDataPtr TopicData::make(ConstEntityPtr entity)
 {
-  if (!entity->topic_info().has_value()) {
+  if (entity->topic_info() == nullptr) {
     return nullptr;
   }
 
@@ -58,7 +58,7 @@ TopicDataPtr TopicData::make(ConstEntityPtr entity)
 
 ///=============================================================================
 TopicData::TopicData(ConstEntityPtr entity)
-: info_(entity->topic_info().value()),
+: info_(*entity->topic_info()),
   pubs_({}),
   subs_({})
 {
@@ -236,7 +236,7 @@ void GraphCache::handle_matched_events_for_put(
   liveliness::ConstEntityPtr entity,
   const GraphNode::TopicQoSMap & topic_qos_map)
 {
-  if (!entity->topic_info().has_value()) {
+  if (entity->topic_info() == nullptr) {
     return;
   }
   const bool is_pub = is_entity_pub(*entity);
@@ -258,7 +258,7 @@ void GraphCache::handle_matched_events_for_put(
       for (liveliness::ConstEntityPtr sub_entity : topic_data_ptr->subs_) {
         // Update counters only if key expressions match.
         if (entity->topic_info()->topic_keyexpr_ ==
-          sub_entity->topic_info().value().topic_keyexpr_)
+          sub_entity->topic_info()->topic_keyexpr_)
         {
           if (is_entity_local(*sub_entity)) {
             update_event_counters(sub_entity, ZENOH_EVENT_SUBSCRIPTION_MATCHED, 1);
@@ -286,7 +286,7 @@ void GraphCache::handle_matched_events_for_put(
       for (liveliness::ConstEntityPtr pub_entity : topic_data_ptr->pubs_) {
         // Update counters only if key expressions match.
         if (entity->topic_info()->topic_keyexpr_ ==
-          pub_entity->topic_info().value().topic_keyexpr_)
+          pub_entity->topic_info()->topic_keyexpr_)
         {
           if (is_entity_local(*pub_entity)) {
             update_event_counters(pub_entity, ZENOH_EVENT_PUBLICATION_MATCHED, 1);
@@ -312,7 +312,7 @@ void GraphCache::handle_matched_events_for_del(
   // We do not have to report any events for the entity removed event
   // as it is already destructed. So we only check for matched entities
   // in the graph that may be local.
-  if (!entity->topic_info().has_value()) {
+  if (entity->topic_info() == nullptr) {
     return;
   }
   if (is_entity_pub(*entity)) {
@@ -466,41 +466,41 @@ void GraphCache::update_topic_map_for_del(
   liveliness::ConstEntityPtr entity,
   bool report_events)
 {
-  if (!entity->topic_info().has_value()) {
+  if (entity->topic_info() == nullptr) {
     RMW_ZENOH_LOG_WARN_NAMED(
       "rmw_zenoh_cpp",
       "update_topic_maps_for_del() called for non-node entity without valid TopicInfo. "
       "Report this.");
     return;
   }
-  const liveliness::TopicInfo & topic_info = entity->topic_info().value();
+  const std::shared_ptr<const liveliness::TopicInfo> topic_info = entity->topic_info();
   const bool is_pub = is_entity_pub(*entity);
 
   GraphNode::TopicMap::iterator cache_topic_it =
-    topic_map.find(topic_info.name_);
+    topic_map.find(topic_info->name_);
   if (cache_topic_it == topic_map.end()) {
     // If an entity is short-lived, it is possible to receive the liveliness token
     // for its deletion before the one for its creation given that Zenoh does not
     // guarantee ordering of liveliness tokens. This situation is harmless.
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp", "topic name %s not found in topic_map.",
-      topic_info.name_.c_str());
+      topic_info->name_.c_str());
     return;
   }
 
   GraphNode::TopicTypeMap::iterator cache_topic_type_it =
-    cache_topic_it->second.find(topic_info.type_);
+    cache_topic_it->second.find(topic_info->type_);
   if (cache_topic_type_it == cache_topic_it->second.end()) {
     // If an entity is short-lived, it is possible to receive the liveliness token
     // for its deletion before the one for its creation given that Zenoh does not
     // guarantee ordering of liveliness tokens. This situation is harmless.
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp", "topic type %s not found in for topic %s.",
-      topic_info.type_.c_str(), topic_info.name_.c_str());
+      topic_info->type_.c_str(), topic_info->name_.c_str());
     return;
   }
 
-  const std::string qos_str = liveliness::qos_to_keyexpr(topic_info.qos_);
+  const std::string qos_str = liveliness::qos_to_keyexpr(topic_info->qos_);
   GraphNode::TopicQoSMap::iterator cache_topic_qos_it = cache_topic_type_it->second.find(
     qos_str);
   if (cache_topic_qos_it == cache_topic_type_it->second.end()) {
@@ -509,7 +509,7 @@ void GraphCache::update_topic_map_for_del(
     // guarantee ordering of liveliness tokens. This situation is harmless.
     RMW_ZENOH_LOG_DEBUG_NAMED(
       "rmw_zenoh_cpp", "qos %s not found in for topic type %s.",
-      qos_str.c_str(), topic_info.type_.c_str());
+      qos_str.c_str(), topic_info->type_.c_str());
     return;
   }
 
