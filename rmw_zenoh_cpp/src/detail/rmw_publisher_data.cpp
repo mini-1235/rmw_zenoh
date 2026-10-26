@@ -271,13 +271,112 @@ PublisherData::PublisherData(
 }
 
 ///=============================================================================
+template<typename SerializeT>
+rmw_ret_t PublisherData::serialize_to_payload(
+  size_t max_data_length,
+  ShmContext * shm,
+  SerializeT && serialize,
+  zenoh::Bytes & payload)
+{
+  // To store serialized message byte array.
+  uint8_t * msg_bytes = nullptr;
+
+  rmw_context_impl_s * context_impl =
+    static_cast<rmw_context_impl_s *>(rmw_node_->data);
+  if (context_impl == nullptr) {
+    RMW_SET_ERROR_MSG("Unable to cast rmw_node->data into rmw_context_impl_s.");
+    return RMW_RET_ERROR;
+  }
+  rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
+
+  // Optional shared memory buffer
+  std::optional<zenoh::ZShmMut> shm_buf = std::nullopt;
+  // Optional buffer reused for serialization from the buffer pool
+  std::optional<BufferPool::Buffer> pool_buf = std::nullopt;
+
+  auto always_free_msg_bytes = rcpputils::make_scope_exit(
+    [&msg_bytes, allocator, &shm_buf, &pool_buf]() {
+      if (!msg_bytes || shm_buf.has_value() || (pool_buf.has_value() && pool_buf.value().data)) {
+        return;
+      }
+      allocator->deallocate(msg_bytes, allocator->state);
+    });
+
+  // Get memory from SHM buffer if available.
+  if (shm && max_data_length >= shm->msgsize_threshold) {
+    if (auto shm_provider = shm->get_shm_provider(*sess_)) {
+      RMW_ZENOH_LOG_DEBUG_NAMED("rmw_zenoh_cpp", "SHM is enabled.");
+
+      auto alloc_result = shm_provider.value().shm_provider().alloc_gc_defrag(max_data_length);
+
+      if (std::holds_alternative<zenoh::ZShmMut>(alloc_result)) {
+        auto && buf = std::get<zenoh::ZShmMut>(std::move(alloc_result));
+        msg_bytes = reinterpret_cast<uint8_t *>(buf.data());
+        shm_buf = std::make_optional(std::move(buf));
+      } else {
+        // Print a warning and revert to regular allocation
+        RMW_ZENOH_LOG_DEBUG_NAMED(
+          "rmw_zenoh_cpp", "Failed to allocate a SHM buffer, fallback to non-SHM");
+      }
+    } else {
+      // Print a warning and revert to regular allocation
+      RMW_ZENOH_LOG_DEBUG_NAMED(
+        "rmw_zenoh_cpp", "SHM provider is not yet available, fallback to non-SHM");
+    }
+  }
+
+  if (!shm_buf.has_value()) {
+    // Try to get memory from the serialization buffer pool.
+    pool_buf = context_impl->serialization_buffer_pool()->allocate(max_data_length);
+    if (pool_buf.has_value() && pool_buf.value().data) {
+      msg_bytes = pool_buf->data;
+    } else {
+      void * data = allocator->allocate(max_data_length, allocator->state);
+      RMW_CHECK_FOR_NULL_WITH_MSG(
+        data, "failed to allocate serialization buffer", return RMW_RET_BAD_ALLOC);
+      msg_bytes = static_cast<uint8_t *>(data);
+    }
+  }
+
+  RMW_CHECK_FOR_NULL_WITH_MSG(
+    msg_bytes, "bytes for message is null", return RMW_RET_BAD_ALLOC);
+
+  // Object that manages the raw buffer
+  eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
+
+  // Object that serializes the data
+  rmw_zenoh_cpp::Cdr ser(fastbuffer);
+  if (!serialize(ser.get_cdr())) {
+    return RMW_RET_ERROR;
+  }
+
+  const size_t data_length = ser.get_serialized_data_length();
+
+  if (shm_buf.has_value()) {
+    payload = zenoh::Bytes(std::move(*shm_buf));
+  } else if (pool_buf.has_value() && pool_buf.value().data) {
+    auto deleter = [buffer_pool = context_impl->serialization_buffer_pool(),
+        buffer = pool_buf](uint8_t *) {
+        buffer_pool->deallocate(buffer.value());
+      };
+    payload = zenoh::Bytes(msg_bytes, data_length, deleter);
+  } else {
+    auto deleter = [msg_bytes, allocator](uint8_t *) {
+        allocator->deallocate(msg_bytes, allocator->state);
+      };
+    payload = zenoh::Bytes(msg_bytes, data_length, deleter);
+  }
+  // The delete responsibility has been handed over to zenoh::Bytes now
+  always_free_msg_bytes.cancel();
+  return RMW_RET_OK;
+}
+
+///=============================================================================
 // Helper function for buffer-aware publishing
 rmw_ret_t PublisherData::publish_buffer_aware(
   const void * ros_message,
   ShmContext * shm)
 {
-  (void)shm;  // SHM not currently used for buffer-aware publishing
-
   rmw_context_impl_t * ctx_impl = static_cast<rmw_context_impl_t *>(rmw_node_->context->impl);
   auto * backend_ctx = ctx_impl->buffer_backend_context();
   if (!backend_ctx) {
@@ -316,36 +415,20 @@ rmw_ret_t PublisherData::publish_buffer_aware(
     const size_t max_data_length = type_support_->get_estimated_serialized_size(
       ros_message, type_support_impl_);
 
-    rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
-    void * data = allocator->allocate(max_data_length, allocator->state);
-    if (!data) {
-      RMW_SET_ERROR_MSG("failed to allocate CPU-group serialization buffer");
-      return RMW_RET_BAD_ALLOC;
+    // Same memory as the base publisher path: SHM, then the buffer pool, then the allocator.
+    zenoh::Bytes payload;
+    rmw_ret_t serialize_ret = serialize_to_payload(
+      max_data_length, shm,
+      [this, ros_message](eprosima::fastcdr::Cdr & cdr) {
+        return type_support_->serialize_ros_message(ros_message, cdr, type_support_impl_);
+      },
+      payload);
+    if (serialize_ret != RMW_RET_OK) {
+      if (serialize_ret == RMW_RET_ERROR && !rmw_error_is_set()) {
+        RMW_SET_ERROR_MSG("could not serialize ROS message for CPU-group publish");
+      }
+      return serialize_ret;
     }
-
-    auto always_free_data = rcpputils::make_scope_exit(
-      [data, allocator]() {
-        allocator->deallocate(data, allocator->state);
-      });
-
-    uint8_t * msg_bytes = static_cast<uint8_t *>(data);
-    eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
-    rmw_zenoh_cpp::Cdr ser(fastbuffer);
-    if (!type_support_->serialize_ros_message(
-        ros_message,
-        ser.get_cdr(),
-        type_support_impl_))
-    {
-      RMW_SET_ERROR_MSG("could not serialize ROS message for CPU-group publish");
-      return RMW_RET_ERROR;
-    }
-
-    const size_t data_length = ser.get_serialized_data_length();
-    auto deleter = [data, allocator](uint8_t *) {
-        allocator->deallocate(data, allocator->state);
-      };
-    auto payload = zenoh::Bytes(msg_bytes, data_length, deleter);
-    always_free_data.cancel();
 
     int64_t source_timestamp = rmw_zenoh_cpp::get_system_time_in_ns();
     auto gid = entity_->copy_gid();
@@ -515,84 +598,19 @@ rmw_ret_t PublisherData::publish(
     ros_message,
     type_support_impl_);
 
-  // To store serialized message byte array.
-  uint8_t * msg_bytes = nullptr;
-
-  rmw_context_impl_s * context_impl =
-    static_cast<rmw_context_impl_s *>(rmw_node_->data);
-  if (context_impl == nullptr) {
-    RMW_SET_ERROR_MSG("Unable to cast rmw_node->data into rmw_context_impl_s.");
-    return RMW_RET_ERROR;
-  }
-  rcutils_allocator_t * allocator = &rmw_node_->context->options.allocator;
-
-  // Optional shared memory buffer
-  std::optional<zenoh::ZShmMut> shm_buf = std::nullopt;
-  // Optional buffer reused for serialization from the buffer pool
-  std::optional<BufferPool::Buffer> pool_buf = std::nullopt;
-
-  auto always_free_msg_bytes = rcpputils::make_scope_exit(
-    [&msg_bytes, allocator, &shm_buf, &pool_buf]() {
-      if (!msg_bytes || shm_buf.has_value() || (pool_buf.has_value() && pool_buf.value().data)) {
-        return;
-      }
-      allocator->deallocate(msg_bytes, allocator->state);
-    });
-
-  // Get memory from SHM buffer if available.
-  if (shm && max_data_length >= shm->msgsize_threshold) {
-    if (auto shm_provider = shm->get_shm_provider(*sess_)) {
-      RMW_ZENOH_LOG_DEBUG_NAMED("rmw_zenoh_cpp", "SHM is enabled.");
-
-      auto alloc_result = shm_provider.value().shm_provider().alloc_gc_defrag(max_data_length);
-
-      if (std::holds_alternative<zenoh::ZShmMut>(alloc_result)) {
-        auto && buf = std::get<zenoh::ZShmMut>(std::move(alloc_result));
-        msg_bytes = reinterpret_cast<uint8_t *>(buf.data());
-        shm_buf = std::make_optional(std::move(buf));
-      } else {
-        // Print a warning and revert to regular allocation
-        RMW_ZENOH_LOG_DEBUG_NAMED(
-          "rmw_zenoh_cpp", "Failed to allocate a SHM buffer, fallback to non-SHM");
-      }
-    } else {
-      // Print a warning and revert to regular allocation
-      RMW_ZENOH_LOG_DEBUG_NAMED(
-        "rmw_zenoh_cpp", "SHM provider is not yet available, fallback to non-SHM");
+  zenoh::Bytes payload;
+  rmw_ret_t ret = serialize_to_payload(
+    max_data_length, shm,
+    [this, ros_message](eprosima::fastcdr::Cdr & cdr) {
+      return type_support_->serialize_ros_message(ros_message, cdr, type_support_impl_);
+    },
+    payload);
+  if (ret != RMW_RET_OK) {
+    if (ret == RMW_RET_ERROR && !rmw_error_is_set()) {
+      RMW_SET_ERROR_MSG("could not serialize ROS message");
     }
+    return ret;
   }
-
-  if (!shm_buf.has_value()) {
-    // Try to get memory from the serialization buffer pool.
-    pool_buf = context_impl->serialization_buffer_pool()->allocate(max_data_length);
-    if (pool_buf.has_value() && pool_buf.value().data) {
-      msg_bytes = pool_buf->data;
-    } else {
-      void * data = allocator->allocate(max_data_length, allocator->state);
-      RMW_CHECK_FOR_NULL_WITH_MSG(
-        data, "failed to allocate serialization buffer", return RMW_RET_BAD_ALLOC);
-      msg_bytes = static_cast<uint8_t *>(data);
-    }
-  }
-
-  RMW_CHECK_FOR_NULL_WITH_MSG(
-    msg_bytes, "bytes for message is null", return RMW_RET_BAD_ALLOC);
-
-  // Object that manages the raw buffer
-  eprosima::fastcdr::FastBuffer fastbuffer(reinterpret_cast<char *>(msg_bytes), max_data_length);
-
-  // Object that serializes the data
-  rmw_zenoh_cpp::Cdr ser(fastbuffer);
-  if (!type_support_->serialize_ros_message(
-      ros_message,
-      ser.get_cdr(),
-      type_support_impl_))
-  {
-    RMW_SET_ERROR_MSG("could not serialize ROS message");
-    return RMW_RET_ERROR;
-  }
-
-  const size_t data_length = ser.get_serialized_data_length();
 
   // The encoding is simply forwarded and is useful when key expressions in the
   // session use different encoding formats. In our case, all key expressions
@@ -603,23 +621,6 @@ rmw_ret_t PublisherData::publish(
   opts.put_options.attachment = rmw_zenoh_cpp::AttachmentData(
     sequence_number_++, source_timestamp, entity_->copy_gid()).serialize_to_zbytes();
 
-  zenoh::Bytes payload;
-  if (shm_buf.has_value()) {
-    payload = zenoh::Bytes(std::move(*shm_buf));
-  } else if (pool_buf.has_value() && pool_buf.value().data) {
-    auto deleter = [buffer_pool = context_impl->serialization_buffer_pool(),
-        buffer = pool_buf](uint8_t *) {
-        buffer_pool->deallocate(buffer.value());
-      };
-    payload = zenoh::Bytes(msg_bytes, data_length, deleter);
-  } else {
-    auto deleter = [msg_bytes, allocator](uint8_t *) {
-        allocator->deallocate(msg_bytes, allocator->state);
-      };
-    payload = zenoh::Bytes(msg_bytes, data_length, deleter);
-  }
-  // The delete responsibility has been handed over to zenoh::Bytes now
-  always_free_msg_bytes.cancel();
 
   TRACETOOLS_TRACEPOINT(
     rmw_publish, static_cast<const void *>(rmw_publisher_), ros_message, source_timestamp);

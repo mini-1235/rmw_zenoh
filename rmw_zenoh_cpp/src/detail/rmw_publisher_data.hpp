@@ -139,6 +139,16 @@ private:
   std::shared_ptr<PublisherEndpoint> create_publisher_endpoint(
     const std::string & full_key, bool buffer_aware = true);
 
+  // Serialize a message of at most max_data_length bytes with serialize(eprosima::fastcdr::Cdr &)
+  // into memory from SHM, the buffer pool or the allocator (in that order), and set payload to
+  // the result. Returns RMW_RET_ERROR without an error message if serialize() fails.
+  template<typename SerializeT>
+  rmw_ret_t serialize_to_payload(
+    size_t max_data_length,
+    ShmContext * shm,
+    SerializeT && serialize,
+    zenoh::Bytes & payload);
+
   // Buffer-aware publish helper
   rmw_ret_t publish_buffer_aware(
     const void * ros_message,
