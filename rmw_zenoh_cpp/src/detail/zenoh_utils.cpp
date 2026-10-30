@@ -186,37 +186,30 @@ std::optional<BufferPool::Buffer> BufferPool::allocate(size_t size)
 
   rcutils_allocator_t allocator = rcutils_get_default_allocator();
 
-  if (buffers_.empty()) {
-    if (size_ + size > max_size_) {
-      return std::nullopt;
-    } else {
-      size_ += size;
+  // Reuse the smallest pooled buffer that fits, but at most twice the requested size.
+  auto best = buffers_.end();
+  for (auto it = buffers_.begin(); it != buffers_.end(); ++it) {
+    if (it->size >= size && it->size / 2 <= size &&
+      (best == buffers_.end() || it->size < best->size))
+    {
+      best = it;
     }
-    uint8_t * data = static_cast<uint8_t *>(allocator.allocate(size, allocator.state));
-    if (data == nullptr) {
-      return std::nullopt;
-    } else {
-      return Buffer(data, size);
-    }
-  } else {
-    Buffer buffer = buffers_.back();
-    buffers_.pop_back();
-    if (buffer.size < size) {
-      const size_t size_diff = size - buffer.size;
-      if (size_ + size_diff > max_size_) {
-        return std::nullopt;
-      }
-      uint8_t * data = static_cast<uint8_t *>(allocator.reallocate(
-          buffer.data, size, allocator.state));
-      if (data == nullptr) {
-        return std::nullopt;
-      }
-      size_ += size_diff;
-      buffer.data = data;
-      buffer.size = size;
-    }
+  }
+  if (best != buffers_.end()) {
+    Buffer buffer = *best;
+    buffers_.erase(best);
     return buffer;
   }
+
+  if (size_ + size > max_size_) {
+    return std::nullopt;
+  }
+  uint8_t * data = static_cast<uint8_t *>(allocator.allocate(size, allocator.state));
+  if (data == nullptr) {
+    return std::nullopt;
+  }
+  size_ += size;
+  return Buffer(data, size);
 }
 
 ///=============================================================================
